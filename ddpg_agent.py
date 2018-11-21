@@ -27,8 +27,8 @@ class AgentDDPG:
         self.seed = seed
         self.total_reward = 0.0
         self.count = 0
-        self.learning_rate = 0.01
-        self.batch_size = 32
+        self.learning_rate = 0.001
+        self.batch_size = 64
         self.update_every = 10
 
         # Instances of the policy function or actor and the value function or critic
@@ -207,6 +207,7 @@ class AgentDDPG:
         critic_loss = F.mse_loss(q_expected, q_targets)
         critic_loss.backward(retain_graph=True)
 
+        # clip the critic parameters before optimize them
         torch.nn.utils.clip_grad_norm_(self.critic_local.parameters(), 1)
 
         # optimize the critic_local model using the optimizer defined for the critic
@@ -237,19 +238,24 @@ class AgentDDPG:
         for name, w in self.actor_local.named_parameters():
             parameter_to_layer[name] = w
 
+        # Get the actor actions using the experience buffer states
+        actor_actions = self.actor_local(states)
+
         # Calculate the merging gradient of the actor_local model w.r.t the model parameters and
         # add the negative of the critic actions gradient w.r.t the q_expected value; do this one layer
         # at a time.
+
         for layer in parameter_to_layer.keys():
-            merged_gradient = torch.autograd.grad(actions, parameter_to_layer[layer],
+            merged_gradient = torch.autograd.grad(actor_actions, parameter_to_layer[layer],
                                                   grad_outputs=- norm_critic_action_gradients,
-                                                  retain_graph=True, allow_unused=True)
+                                                  retain_graph=True)
+
             for l, w in self.actor_local.named_parameters():
                 if l == layer:
                     w.grad = merged_gradient[0]
 
-        # loss = torch.mean(- norm_critic_action_gradients * actions)
-        # loss.backward()
+        # clip the actor parameters before optimizations
+        torch.nn.utils.clip_grad_norm_(self.actor_local.parameters(), 1)
 
         # optimize the actor_local model using the optimizer defined for the actor
         # In the init function of this class
