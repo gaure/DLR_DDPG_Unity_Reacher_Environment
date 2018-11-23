@@ -27,7 +27,8 @@ class AgentDDPG:
         self.seed = seed
         self.total_reward = 0.0
         self.count = 0
-        self.learning_rate = 0.001
+        self.learning_rate_actor = 0.0001
+        self.learning_rate_critic = 0.001
         self.batch_size = 64
         self.update_every = 10
 
@@ -52,10 +53,10 @@ class AgentDDPG:
                                     self.action_size,
                                     self.seed).to(device)
         # Actor Optimizer
-        self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=self.learning_rate)
+        self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=self.learning_rate_actor)
 
         # Critic Optimizer
-        self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=self.learning_rate)
+        self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=self.learning_rate_critic)
 
         # Make sure local and target start with the same weights
         self.actor_target.load_state_dict(self.actor_local.state_dict())
@@ -76,7 +77,7 @@ class AgentDDPG:
 
         # Parameters for the Algorithm
         self.gamma = 0.99  # Discount factor
-        self.tau = 0.01  # Soft update for target parameters Actor Critic with Advantage
+        self.tau = 0.001  # Soft update for target parameters Actor Critic with Advantage
 
     # Actor interact with the environment through the step
     def step(self, state, action, reward, next_state, done):
@@ -95,8 +96,10 @@ class AgentDDPG:
         # Learn every update_times time steps.
         self.t_step = (self.t_step + 1) % self.update_every
         if self.t_step == 0:
+
             # Check to see if you have enough to produce a batch
             # and learn from it
+
             if len(self.memory) > self.batch_size:
                 experiences = self.memory.sample()
                 # Train the networks using the experiences
@@ -110,6 +113,7 @@ class AgentDDPG:
         # Given a state return the action recommended by the policy
         # Reshape the state to fit the torch tensor input
         state = torch.from_numpy(state).float().unsqueeze(0).to(device)
+
         # Pass the state to the actor local model to get an action
         # recommend for the policy in a state
         # set the actor_local model to predict not to train
@@ -204,7 +208,7 @@ class AgentDDPG:
 
         # loss function for the critic_local model mean square of the difference
         # between the q_expected value and the q_target value.
-        critic_loss = F.mse_loss(q_expected, q_targets)
+        critic_loss = F.smooth_l1_loss(q_expected, q_targets)
         critic_loss.backward(retain_graph=True)
 
         # clip the critic parameters before optimize them
@@ -216,12 +220,8 @@ class AgentDDPG:
 
         # collect the gradients of the critic actions w.r.t the q_expected value
         # this tells how much the actions magnitud is with respect to the q_value
-        unnorm_critic_action_gradients = torch.autograd.grad(q_expected, actions,
-                                                             grad_outputs=torch.ones(q_expected.shape),
-                                                             allow_unused=True)
-
-        # Normalize the gradients dividing by the batchs
-        norm_critic_action_gradients = torch.div(unnorm_critic_action_gradients[0], self.batch_size)
+        critic_action_gradients = torch.autograd.grad(q_expected, actions, grad_outputs=torch.ones(q_expected.shape),
+                                                      allow_unused=True)
 
         # --- Optimize the local Actor Model ---#
 
@@ -234,6 +234,7 @@ class AgentDDPG:
         self.actor_optimizer.zero_grad()
 
         # Create a dictionary with the actor local parameter
+        # indexed by layer
         parameter_to_layer = defaultdict(list)
         for name, w in self.actor_local.named_parameters():
             parameter_to_layer[name] = w
@@ -244,18 +245,13 @@ class AgentDDPG:
         # Calculate the merging gradient of the actor_local model w.r.t the model parameters and
         # add the negative of the critic actions gradient w.r.t the q_expected value; do this one layer
         # at a time.
-
         for layer in parameter_to_layer.keys():
-            merged_gradient = torch.autograd.grad(actor_actions, parameter_to_layer[layer],
-                                                  grad_outputs=- norm_critic_action_gradients,
-                                                  retain_graph=True)
-
+            merged_gradients = torch.autograd.grad(actor_actions, parameter_to_layer[layer],
+                                                   grad_outputs=- critic_action_gradients[0],
+                                                   retain_graph=True)[0]
             for l, w in self.actor_local.named_parameters():
                 if l == layer:
-                    w.grad = merged_gradient[0]
-
-        # clip the actor parameters before optimizations
-        torch.nn.utils.clip_grad_norm_(self.actor_local.parameters(), 1)
+                    w.grad = merged_gradients
 
         # optimize the actor_local model using the optimizer defined for the actor
         # In the init function of this class
