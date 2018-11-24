@@ -29,8 +29,8 @@ class AgentDDPG:
         self.count = 0
         self.learning_rate_actor = 0.0001
         self.learning_rate_critic = 0.001
-        self.batch_size = 64
-        self.update_every = 10
+        self.batch_size = 1024
+        self.update_every = 20
 
         # Instances of the policy function or actor and the value function or critic
         # Actor critic with Advantage
@@ -72,7 +72,7 @@ class AgentDDPG:
                              self.exploration_sigma)
 
         # Initialize the Replay Memory
-        self.buffer_size = 100000
+        self.buffer_size = 1000000
         self.memory = ReplayBuffer(self.buffer_size, self.batch_size)
 
         # Parameters for the Algorithm
@@ -127,7 +127,7 @@ class AgentDDPG:
 
         # Because we are exploring we add some noise to the
         # action vector
-        return list(actions.detach().numpy().reshape(4,) + self.noise.sample())
+        return list(actions.detach().numpy().reshape(4,) + self.noise.sample() * 0.1)
 
     # This is the Actor learning logic called when the agent
     # take a step to learn
@@ -220,8 +220,8 @@ class AgentDDPG:
 
         # collect the gradients of the critic actions w.r.t the q_expected value
         # this tells how much the actions magnitud is with respect to the q_value
-        critic_action_gradients = torch.autograd.grad(q_expected, actions, grad_outputs=torch.ones(q_expected.shape),
-                                                      allow_unused=True)
+        # critic_action_gradients = torch.autograd.grad(q_expected, actions, grad_outputs=torch.ones(q_expected.shape),
+        #                                               allow_unused=True)
 
         # --- Optimize the local Actor Model ---#
 
@@ -230,28 +230,33 @@ class AgentDDPG:
         # value with respect to actions(critic_action_gradient), and the
         # "gradient of the policy with respect to the policy parameters".
 
-        # Set the model gradients to zero in preparation
-        self.actor_optimizer.zero_grad()
-
         # Create a dictionary with the actor local parameter
         # indexed by layer
-        parameter_to_layer = defaultdict(list)
-        for name, w in self.actor_local.named_parameters():
-            parameter_to_layer[name] = w
+        # parameter_to_layer = defaultdict(list)
+        # for name, w in self.actor_local.named_parameters():
+        #     parameter_to_layer[name] = w
 
         # Get the actor actions using the experience buffer states
         actor_actions = self.actor_local(states)
+        # Use as a loss the negative sum of the q_values produce by the optimized critic local model given the
+        # action of the actor_local model obtain using the states of the sampled buffer.
+        loss_actor = -1 * torch.sum(self.critic_local.forward(states, actor_actions))
 
         # Calculate the merging gradient of the actor_local model w.r.t the model parameters and
         # add the negative of the critic actions gradient w.r.t the q_expected value; do this one layer
         # at a time.
-        for layer in parameter_to_layer.keys():
-            merged_gradients = torch.autograd.grad(actor_actions, parameter_to_layer[layer],
-                                                   grad_outputs=- critic_action_gradients[0],
-                                                   retain_graph=True)[0]
-            for l, w in self.actor_local.named_parameters():
-                if l == layer:
-                    w.grad = merged_gradients
+        # for layer in parameter_to_layer.keys():
+        #     merged_gradients = torch.autograd.grad(actor_actions, parameter_to_layer[layer],
+        #                                            grad_outputs=- critic_action_gradients[0],
+        #                                            retain_graph=True)[0]
+        #     for l, w in self.actor_local.named_parameters():
+        #         if l == layer:
+        #             w.grad = merged_gradients
+
+        # Set the model gradients to zero in preparation
+        self.actor_optimizer.zero_grad()
+
+        loss_actor.backward()
 
         # optimize the actor_local model using the optimizer defined for the actor
         # In the init function of this class
