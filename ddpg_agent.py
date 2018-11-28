@@ -29,8 +29,8 @@ class AgentDDPG:
         self.count = 0
         self.learning_rate_actor = 0.0001
         self.learning_rate_critic = 0.001
-        self.batch_size = 1024
-        self.update_every = 20
+        self.batch_size = 128
+        self.update_every = 1
 
         # Instances of the policy function or actor and the value function or critic
         # Actor critic with Advantage
@@ -127,7 +127,7 @@ class AgentDDPG:
 
         # Because we are exploring we add some noise to the
         # action vector
-        return list(actions.detach().numpy().reshape(4,) + self.noise.sample() * 0.1)
+        return list(actions.detach().numpy().reshape(4,) + self.noise.sample())
 
     # This is the Actor learning logic called when the agent
     # take a step to learn
@@ -187,20 +187,11 @@ class AgentDDPG:
         q_targets = torch.from_numpy(rewards + self.gamma * q_targets_next_state_action_values.numpy() *
                                      (1 - dones)).float()
 
-        # Using the critic_local network and the current state, I calculated the expected q_value or
-        # which is the same the q_value of the current state. The different between the q_expected and
-        # the q_target calculated with the bellman equation is our error signal.
-        # state q_value using the bellman equation.
-
         # --- Optimize the local Critic Model ----#
 
         # Here we start the supervise training process of the critic_local network
         # we pass a bunch of states actions samples it produces the expected output
-        # q_value of each action we passed. We also need the gradient of the expected
-        # q_value with respect to the actions of this model to used it in the calculation
-        # of the local_critic optimization as part of the loss signal; this why we set the
-        # actions vector to requires_grad
-        actions.requires_grad = True
+        # q_value of each action we passed.
         q_expected = self.critic_local(states, actions)
 
         # Clear grad buffer values in preparation.
@@ -211,51 +202,26 @@ class AgentDDPG:
         critic_loss = F.smooth_l1_loss(q_expected, q_targets)
         critic_loss.backward(retain_graph=True)
 
-        # clip the critic parameters before optimize them
+        # gradient clipping
         torch.nn.utils.clip_grad_norm_(self.critic_local.parameters(), 1)
 
         # optimize the critic_local model using the optimizer defined for the critic
         # In the init function of this class
         self.critic_optimizer.step()
 
-        # collect the gradients of the critic actions w.r.t the q_expected value
-        # this tells how much the actions magnitud is with respect to the q_value
-        # critic_action_gradients = torch.autograd.grad(q_expected, actions, grad_outputs=torch.ones(q_expected.shape),
-        #                                               allow_unused=True)
-
         # --- Optimize the local Actor Model ---#
-
-        # This is as per David Silver Deterministic Policy Gradient Algorithms paper
-        # The policy improvement may be decomposed into the "gradient of the action-
-        # value with respect to actions(critic_action_gradient), and the
-        # "gradient of the policy with respect to the policy parameters".
-
-        # Create a dictionary with the actor local parameter
-        # indexed by layer
-        # parameter_to_layer = defaultdict(list)
-        # for name, w in self.actor_local.named_parameters():
-        #     parameter_to_layer[name] = w
 
         # Get the actor actions using the experience buffer states
         actor_actions = self.actor_local(states)
+
         # Use as a loss the negative sum of the q_values produce by the optimized critic local model given the
         # action of the actor_local model obtain using the states of the sampled buffer.
         loss_actor = -1 * torch.sum(self.critic_local.forward(states, actor_actions))
 
-        # Calculate the merging gradient of the actor_local model w.r.t the model parameters and
-        # add the negative of the critic actions gradient w.r.t the q_expected value; do this one layer
-        # at a time.
-        # for layer in parameter_to_layer.keys():
-        #     merged_gradients = torch.autograd.grad(actor_actions, parameter_to_layer[layer],
-        #                                            grad_outputs=- critic_action_gradients[0],
-        #                                            retain_graph=True)[0]
-        #     for l, w in self.actor_local.named_parameters():
-        #         if l == layer:
-        #             w.grad = merged_gradients
-
         # Set the model gradients to zero in preparation
         self.actor_optimizer.zero_grad()
 
+        # Back propagate
         loss_actor.backward()
 
         # optimize the actor_local model using the optimizer defined for the actor
@@ -281,6 +247,6 @@ class AgentDDPG:
         if self.score > self.best:
             self.best = self.score
 
-    def save_model_weights(self, actor_local):
-        torch.save(actor_local.state_dict(), './checkpoints.pkl')
+    def save_model_weights(self):
+        torch.save(self.actor_local.state_dict(), './checkpoints.pkl')
 
